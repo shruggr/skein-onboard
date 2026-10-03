@@ -1,0 +1,38 @@
+{
+  "kind": "app",
+  "name": "onboard",
+  "version": "0.1.0",
+  "programs": {
+    "onboard": "bin/onboard.wasm"
+  },
+  "provides": [
+    {
+      "interface": "onboard/1",
+      "functions": {
+        "create": {
+          "writes": true,
+          "args": {
+            "handle": "string",
+            "image?": "string"
+          },
+          "answer": {
+            "handle": "string",
+            "identity": "string",
+            "url": "string"
+          }
+        }
+      }
+    }
+  ],
+  "requires": [],
+  "dispatch": [
+    {
+      "transport": "http",
+      "address": "/call",
+      "sender": "session",
+      "program": "onboard",
+      "fn": "call"
+    }
+  ],
+  "description": "The onboarding app (shruggr/skein#90), installed in the host skein: POST /onboard/call {fn: \"onboard.create\", args: {handle, image?}} over any BRC-104 session asks the host's instance manager for a skein owned by the caller's key, records it under onboard/instances/<handle> and answers {handle, identity, url}."
+}
