@@ -1,7 +1,7 @@
 {
   "kind": "app",
   "name": "onboard",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "programs": {
     "onboard": "bin/onboard.wasm"
   },
@@ -18,7 +18,11 @@
           "writes": true,
           "args": {
             "handle": "string",
-            "image?": "string"
+            "image?": "string",
+            "claim": {
+              "message": "map",
+              "body": "bytes"
+            }
           },
           "answer": {
             "handle": "string",
@@ -96,5 +100,5 @@
       "fn": "paymail"
     }
   ],
-  "description": "The onboarding app (shruggr/skein#90, #113), installed in the host skein. POST /onboard/call {fn: \"onboard.create\", args: {handle, image?}} over any BRC-104 session asks the host's instance manager for a skein owned by the caller's key; POST /onboard/register {username, identityKey, signature} (open; signed over \"register <username>@<domain>\") asks it for a mailbox instance for the key. Each handle is certified through the host's certifier and recorded under onboard/handles/<handle>, and the app serves BRC-169 from those records (/onboard/manifest.json, /onboard/resolve, /onboard/search, the paymail PKI at /onboard/bsvalias/id/) with the holders' signed profiles (POST /onboard/profile). onboard.adopt (the host skein's owner) records and certifies a mailbox instance made before. config.onboard.domain is the host's one handle domain."
+  "description": "The onboarding app (shruggr/skein#90, #113), installed in the host skein. POST /onboard/call {fn: \"onboard.create\", args: {handle, image?, claim}} over any BRC-104 session asks the host's instance manager for a skein, passing the caller's own signed claim {message, body} (a message in box claim naming no recipient, shruggr/skein#127), which the manager forwards into it as its first entry: the signer owns it; POST /onboard/register {username, identityKey, signature} (open; signed over \"register <username>@<domain>\") asks it for a mailbox instance for the key. Each handle is certified through the host's certifier and recorded under onboard/handles/<handle>, and the app serves BRC-169 from those records (/onboard/manifest.json, /onboard/resolve, /onboard/search, the paymail PKI at /onboard/bsvalias/id/) with the holders' signed profiles (POST /onboard/profile). onboard.adopt (the host skein's owner) records and certifies a mailbox instance made before. config.onboard.domain is the host's one handle domain."
 }

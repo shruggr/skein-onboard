@@ -8,7 +8,7 @@ wallet that signs a registration gets a mailbox instance and a handle
 certificate. Every handle the host certifies is recorded here; resolve,
 search and the manifest are answered from those records. The app asks the
 host's **instance manager** for every instance and the host's **certifier**
-for every signature; it holds no key. Version **0.2.0**.
+for every signature; it holds no key. Version **0.3.0**.
 
 ## What it is
 
@@ -16,7 +16,7 @@ One program, `bin/onboard.wasm`, on six rows (installed under `/onboard/`):
 
 | route | sender | body / query | answer |
 |---|---|---|---|
-| `POST /onboard/call` | `session` | `{fn: "onboard.create", args: {handle, image?}}` | `{fn, result: {handle, identity, url}}` |
+| `POST /onboard/call` | `session` | `{fn: "onboard.create", args: {handle, image?, claim}}` | `{fn, result: {handle, identity, url}}` |
 | `POST /onboard/register` | `*` | `{username, identityKey, signature}` | `{handle, domain, identityKey, messagebox, certificate, keyringForSubject}` |
 | `POST /onboard/profile` | `*` | `{handle, record, signature}` | `{handle, profile, displayName?, avatarURL?}` |
 | `GET /onboard/resolve` | `*` | `?handle=<handle>[@<domain>]` | BRC-169 §5.2 |
@@ -81,9 +81,28 @@ good at another.
 The same key and name again: the mailbox stands, a new certificate is
 issued under a new serial (a wallet that removed the old one can take it).
 
-`onboard.create` goes the same way with the default image: the manager
-creates the skein claimed for the session's key, and the new instance's
-handle is certified for the instance's own identity.
+`onboard.create` goes the same way with the default image, and the new
+instance's handle is certified for the instance's own identity. Its owner
+is whoever signed its claim (shruggr/skein#127), and the page signs it:
+
+- `args.claim` is `{message, body}`: `message` a mail record `{kind:
+  "mail", op: "put", sender: <the wallet's identity key>, box: "claim",
+  body: <the CID of body>, nonce, signature}` naming **no recipient** (the
+  instance does not exist yet), signed as every skein message is —
+  `createSignature` under `[2, "metanet handles envelope"]`, key ID `send`,
+  counterparty `anyone`, over the dag-cbor of the record without
+  `signature`; `body` the dag-cbor bytes of `{messagebox?, handle?,
+  domain?}` (the owner's mailbox entry, if any). Sent as dag-json
+  (`{"/": {"bytes": …}}` for bytes, `{"/": "<cid>"}` for the CID).
+- This app passes it to the instance manager untouched (`create {handle,
+  owner, image?, domain, claim}`); the manager checks that its sender is
+  the session's key and forwards it into the new instance as its first
+  entry, before the hostname is published. The instance's front door checks
+  the signature, and the kernel writes the signer's admin rows and removes
+  the claim row. The host signs nothing for the owner.
+- No claim: 400 `bad-args` (`args.claim: missing`). Another key's claim,
+  or one whose signature does not hold: 409 `refused`, and the instance is
+  left unpublished.
 
 ### The profile (`POST /onboard/profile`)
 
@@ -113,7 +132,7 @@ certifier in its address book); then the operator installs this app into
 it:
 
 ```
-skein-host install https://github.com/shruggr/skein-onboard#v0.2.0 --instance host \
+skein-host install https://github.com/shruggr/skein-onboard#v0.3.0 --instance host \
   --config '{"onboard": {"domain": "skein.nexus"}}'
 ```
 
@@ -152,7 +171,7 @@ certificate), at the commit pinned in `src/testapps.ts`.
 
 | | |
 |---|---|
-| this app | 0.2.0 (tag `v0.2.0`) |
+| this app | 0.3.0 (tag `v0.3.0`): `onboard.create` takes the caller's signed claim (shruggr/skein#127) |
 | skein-sdk | v0.4.0, by tag tarball and hash in `build.zig.zon` (`cbor`, `sk`, `app`, `dagjson`, `secp`; no wallet) |
 | skein | log format 8; skein's tests pin this repo by commit |
 

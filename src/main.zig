@@ -8,7 +8,7 @@
 //! Rows (installed under /onboard/; the router maps the host's own origin onto
 //! the open ones: docs/MESSAGES.md in skein, "BRC-169 is discovery"):
 //!
-//!   POST /onboard/call           sender session   {fn: "onboard.create", args: {handle, image?}} → {handle, identity, url}
+//!   POST /onboard/call           sender session   {fn: "onboard.create", args: {handle, image?, claim}} → {handle, identity, url}
 //!   POST /onboard/register       sender *         {username, identityKey, signature} → a mailbox instance and its certificate
 //!   POST /onboard/profile        sender *         {handle, record, signature} → the holder's signed profile kept
 //!   GET  /onboard/resolve        sender *         ?handle=<handle>[@<domain>] → BRC-169 §5.2
@@ -300,7 +300,12 @@ fn handleOfKey(a: Allocator, idx: Value, key: []const u8) !?[]const u8 {
 // ---------------------------------------------------------------- the /call route: onboard.create, onboard.adopt
 
 /// What a call's body asks: {fn, args} checked down to its own args. `owner`: adopt's (hex).
-pub const Ask = struct { func: []const u8, handle: []const u8, image: ?[]const u8 = null, owner: ?[]const u8 = null };
+/// `claim`: create's — the caller's own signed claim {message, body} (shruggr/skein#127):
+/// a message in box `claim`, signed by the caller's wallet and naming no recipient (the
+/// instance does not exist yet), passed to the instance manager, which forwards it into
+/// the new instance as its first entry; the kernel takes the owner from its signer. This
+/// app does not sign it, read it or change it.
+pub const Ask = struct { func: []const u8, handle: []const u8, image: ?[]const u8 = null, owner: ?[]const u8 = null, claim: ?Value = null };
 
 /// The body {fn: "onboard.create" | "onboard.adopt", args} → the args,
 /// checked against the declared shape (`decl`: the manifest's declaration of
@@ -321,7 +326,7 @@ pub fn parseAsk(a: Allocator, body: Value, declOf: anytype) !union(enum) { ok: A
         if (!secp.isIdentity(owner)) return .{ .fail = .{ .status = 400, .code = "bad-args", .message = "args.owner: an identity key (hex)" } };
         return .{ .ok = .{ .func = ADOPT, .handle = handle, .owner = owner } };
     }
-    return .{ .ok = .{ .func = CREATE, .handle = handle, .image = Value.str(args.get("image")) } };
+    return .{ .ok = .{ .func = CREATE, .handle = handle, .image = Value.str(args.get("image")), .claim = args.get("claim") } };
 }
 
 /// The manifest's declarations, by full function name.
@@ -398,6 +403,7 @@ fn route(a: Allocator, in: Value, req: Value) !Value {
     try r.put("handle", cbor.string(ask.handle));
     try r.put("owner", .{ .bytes = caller });
     try r.put("image", cbor.optStr(ask.image));
+    try r.put("claim", ask.claim orelse .null);
     try r.put("issuedAt", in.get("now"));
     try r.put("request", cbor.optCid(Value.cidOf(req.get("request"))));
     _ = try sk.launch(a, try selfProgram(req), try sk.put(a, r.value()));
@@ -561,14 +567,16 @@ fn errorAnswer(a: Allocator, message: []const u8, status: ?u16) !void {
     return sk.answer(a, m.value());
 }
 
-/// Ask the instance manager for the instance: create {handle, owner, image?, domain}.
-fn askManager(a: Allocator, handle: []const u8, owner: []const u8, image: ?Value, domain: []const u8) !void {
+/// Ask the instance manager for the instance: create {handle, owner, image?, domain, claim?}
+/// (`claim`: the owner's signed claim, as the page sent it; shruggr/skein#127).
+fn askManager(a: Allocator, handle: []const u8, owner: []const u8, image: ?Value, domain: []const u8, claim: ?Value) !void {
     const manager = sk.provider(a, "manager") catch return sk.report("no instance manager in this skein's address book: the onboarding app runs in the host skein");
     var q = cbor.MapBuilder.init(a);
     try q.put("handle", cbor.string(handle));
     try q.put("owner", .{ .bytes = owner });
     try q.put("image", image);
     try q.put("domain", cbor.string(domain));
+    if (claim) |c| if (c != .null) try q.put("claim", c);
     try sk.awaitRecord(try sk.emit(a, manager, "create", q.value(), null));
 }
 
@@ -666,7 +674,7 @@ fn createThread(a: Allocator, in: Value, args: Value) !void {
         return sk.report("an answer in an unexpected box");
     }
     const owner = Value.bytesOf(args.get("owner")) orelse return sk.report("the request names no owner");
-    return askManager(a, handle, owner, args.get("image"), cfg.domain);
+    return askManager(a, handle, owner, args.get("image"), cfg.domain, args.get("claim"));
 }
 
 /// register: a mailbox instance for the key (the manager's create, image
@@ -705,7 +713,7 @@ fn registerThread(a: Allocator, in: Value, args: Value) !void {
         if (!eql(u8, Value.bytesOf(prev.get("subject")) orelse "", subject)) return errorAnswer(a, try std.fmt.allocPrint(a, "username {s} is taken", .{handle}), 409);
         return issue(a, args, handle, domain, subject, Value.str(prev.get("messagebox")) orelse "");
     }
-    return askManager(a, handle, subject, cbor.string("mailbox"), domain);
+    return askManager(a, handle, subject, cbor.string("mailbox"), domain, null);
 }
 
 // ---------------------------------------------------------------- the profile (an open route)
@@ -871,7 +879,11 @@ fn manifestRoute(a: Allocator) !Value {
 // ---------------------------------------------------------------- tests
 
 const decl_json =
-    \\{"writes":true,"args":{"handle":"string","image?":"string"},"answer":{"handle":"string","identity":"string","url":"string"}}
+    \\{"writes":true,"args":{"handle":"string","image?":"string","claim":{"message":"map","body":"bytes"}},"answer":{"handle":"string","identity":"string","url":"string"}}
+;
+/// A claim as a page sends it (dag-json; its shape only: the manager forwards it, the instance's front door checks it).
+const claim_json =
+    \\"claim":{"message":{"kind":"mail","op":"put","box":"claim"},"body":{"/":{"bytes":"oA"}}}
 ;
 const adopt_json =
     \\{"writes":true,"args":{"handle":"string","owner":"string"},"answer":{"handle":"string","domain":"string","identityKey":"string","messagebox":"string","serialNumber":"string"}}
@@ -890,16 +902,19 @@ test "a create's body" {
     defer arena.deinit();
     const a = arena.allocator();
     const decl = TestDecls{ .create = try dagjson.decode(a, decl_json), .adopt = try dagjson.decode(a, adopt_json) };
-    const ok = try parseAsk(a, try dagjson.decode(a, "{\"fn\":\"onboard.create\",\"args\":{\"handle\":\"alice\"}}"), decl);
+    const ok = try parseAsk(a, try dagjson.decode(a, "{\"fn\":\"onboard.create\",\"args\":{\"handle\":\"alice\"," ++ claim_json ++ "}}"), decl);
     try std.testing.expectEqualStrings("alice", ok.ok.handle);
     try std.testing.expect(ok.ok.image == null);
-    const img = try parseAsk(a, try dagjson.decode(a, "{\"fn\":\"onboard.create\",\"args\":{\"handle\":\"bob\",\"image\":\"default\"}}"), decl);
+    try std.testing.expectEqualStrings("claim", Value.str(ok.ok.claim.?.get("message").?.get("box")).?);
+    const noclaim = try parseAsk(a, try dagjson.decode(a, "{\"fn\":\"onboard.create\",\"args\":{\"handle\":\"alice\"}}"), decl);
+    try std.testing.expectEqualStrings("args.claim: missing", noclaim.fail.message);
+    const img = try parseAsk(a, try dagjson.decode(a, "{\"fn\":\"onboard.create\",\"args\":{\"handle\":\"bob\",\"image\":\"default\"," ++ claim_json ++ "}}"), decl);
     try std.testing.expectEqualStrings("default", img.ok.image.?);
     const unk = try parseAsk(a, try dagjson.decode(a, "{\"fn\":\"create\",\"args\":{\"handle\":\"x\"}}"), decl);
     try std.testing.expectEqual(@as(u16, 404), unk.fail.status);
     const bad = try parseAsk(a, try dagjson.decode(a, "{\"fn\":\"onboard.create\",\"args\":{\"handle\":7}}"), decl);
     try std.testing.expectEqualStrings("bad-args", bad.fail.code);
-    const extra = try parseAsk(a, try dagjson.decode(a, "{\"fn\":\"onboard.create\",\"args\":{\"handle\":\"x\",\"owner\":\"y\"}}"), decl);
+    const extra = try parseAsk(a, try dagjson.decode(a, "{\"fn\":\"onboard.create\",\"args\":{\"handle\":\"x\",\"owner\":\"y\"," ++ claim_json ++ "}}"), decl);
     try std.testing.expectEqualStrings("args.owner: not in the shape", extra.fail.message);
     const none = try parseAsk(a, try dagjson.decode(a, "{\"fn\":\"onboard.create\"}"), decl);
     const adopt = try parseAsk(a, try dagjson.decode(a, "{\"fn\":\"onboard.adopt\",\"args\":{\"handle\":\"dave\",\"owner\":\"" ++ vector_key ++ "\"}}"), decl);
