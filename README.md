@@ -9,7 +9,7 @@ certificate. Every handle the host certifies is recorded here; resolve,
 search and the manifest are answered from those records. The app asks the
 host's **instance manager** for every instance and the host's **certifier**
 for every signature; it holds no key. It finds both in its address book by
-transport and address (`local` `manager`, `local` `certifier`). Version **0.3.1**.
+transport and address (`local` `manager`, `local` `certifier`). Version **0.3.2**.
 
 ## What it is
 
@@ -133,7 +133,7 @@ certifier in its address book); then the operator installs this app into
 it:
 
 ```
-skein-host install https://github.com/shruggr/skein-onboard#v0.3.1 --instance host \
+skein-host install https://github.com/shruggr/skein-onboard#v0.3.2 --instance host \
   --config '{"onboard": {"domain": "skein.nexus"}}'
 ```
 
@@ -172,8 +172,8 @@ certificate), at the commit pinned in `src/testapps.ts`.
 
 | | |
 |---|---|
-| this app | 0.3.1 (tag `v0.3.1`): the manager and the certifier found by `sk.peerAt("local", …)` (the address book has no roles, shruggr/skein#126); 0.3.0: `onboard.create` takes the caller's signed claim (shruggr/skein#127) |
-| skein-sdk | v0.7.0, by tag tarball and hash in `build.zig.zon` (`cbor`, `sk`, `app`, `dagjson`, `secp`; no wallet) |
+| this app | 0.3.2 (tag `v0.3.2`): skein-sdk v0.7.1; 0.3.1: the manager and the certifier found by `sk.peerAt("local", …)` (the address book has no roles, shruggr/skein#126); 0.3.0: `onboard.create` takes the caller's signed claim (shruggr/skein#127) |
+| skein-sdk | v0.7.1, by tag tarball and hash in `build.zig.zon` (`cbor`, `sk`, `app`, `dagjson`, `secp`; no wallet) |
 | skein | log format 8; skein's tests pin this repo by commit |
 
 ## Contributing

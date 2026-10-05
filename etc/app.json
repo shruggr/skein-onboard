@@ -1,7 +1,7 @@
 {
   "kind": "app",
   "name": "onboard",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "programs": {
     "onboard": "bin/onboard.wasm"
   },
