@@ -119,8 +119,9 @@ skein-host install https://github.com/shruggr/skein-onboard#v0.2.0 --instance ho
 
 A host skein made before the certifier was in the host skein's address
 book needs its entry: `skein-host peers host add <certifier key> certifier
---transport local --role certifier` (the key: the manifest's
-`metanet.trust.publicKey`, `providerKey("certifier")`).
+--transport local --role certifier` (the key: what the host's manifest
+published as `metanet.trust.publicKey` before this app served it — the
+master secret's child under `[2, "skein provider"]`, key ID `certifier`).
 
 ## Build and test
 
