@@ -8,7 +8,8 @@ wallet that signs a registration gets a mailbox instance and a handle
 certificate. Every handle the host certifies is recorded here; resolve,
 search and the manifest are answered from those records. The app asks the
 host's **instance manager** for every instance and the host's **certifier**
-for every signature; it holds no key. Version **0.3.0**.
+for every signature; it holds no key. It finds both in its address book by
+transport and address (`local` `manager`, `local` `certifier`). Version **0.3.1**.
 
 ## What it is
 
@@ -132,13 +133,13 @@ certifier in its address book); then the operator installs this app into
 it:
 
 ```
-skein-host install https://github.com/shruggr/skein-onboard#v0.3.0 --instance host \
+skein-host install https://github.com/shruggr/skein-onboard#v0.3.1 --instance host \
   --config '{"onboard": {"domain": "skein.nexus"}}'
 ```
 
 A host skein made before the certifier was in the host skein's address
-book needs its entry: `skein-host peers host add <certifier key> certifier
---transport local --role certifier` (the key: what the host's manifest
+book needs its entry, sent by the owner: `skein plan peers add <certifier
+key> certifier --transport local …` (the key: what the host's manifest
 published as `metanet.trust.publicKey` before this app served it — the
 master secret's child under `[2, "skein provider"]`, key ID `certifier`).
 
@@ -171,8 +172,8 @@ certificate), at the commit pinned in `src/testapps.ts`.
 
 | | |
 |---|---|
-| this app | 0.3.0 (tag `v0.3.0`): `onboard.create` takes the caller's signed claim (shruggr/skein#127) |
-| skein-sdk | v0.4.0, by tag tarball and hash in `build.zig.zon` (`cbor`, `sk`, `app`, `dagjson`, `secp`; no wallet) |
+| this app | 0.3.1 (tag `v0.3.1`): the manager and the certifier found by `sk.peerAt("local", …)` (the address book has no roles, shruggr/skein#126); 0.3.0: `onboard.create` takes the caller's signed claim (shruggr/skein#127) |
+| skein-sdk | v0.7.0, by tag tarball and hash in `build.zig.zon` (`cbor`, `sk`, `app`, `dagjson`, `secp`; no wallet) |
 | skein | log format 8; skein's tests pin this repo by commit |
 
 ## Contributing

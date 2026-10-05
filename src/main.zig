@@ -570,7 +570,7 @@ fn errorAnswer(a: Allocator, message: []const u8, status: ?u16) !void {
 /// Ask the instance manager for the instance: create {handle, owner, image?, domain, claim?}
 /// (`claim`: the owner's signed claim, as the page sent it; shruggr/skein#127).
 fn askManager(a: Allocator, handle: []const u8, owner: []const u8, image: ?Value, domain: []const u8, claim: ?Value) !void {
-    const manager = sk.provider(a, "manager") catch return sk.report("no instance manager in this skein's address book: the onboarding app runs in the host skein");
+    const manager = (try sk.peerAt(a, "local", "manager")) orelse return sk.report("no instance manager in this skein's address book: the onboarding app runs in the host skein");
     var q = cbor.MapBuilder.init(a);
     try q.put("handle", cbor.string(handle));
     try q.put("owner", .{ .bytes = owner });
@@ -592,7 +592,7 @@ fn recordInstance(a: Allocator, in: Value, r: sk.Reply, handle: []const u8) !Val
 /// Issue a certificate for handle@domain → subject: the issuance record put,
 /// its hash the serial number, and the certifier asked to sign.
 fn issue(a: Allocator, args: Value, handle: []const u8, domain: []const u8, subject: []const u8, messagebox: []const u8) !void {
-    const certifier = sk.provider(a, "certifier") catch return sk.report("no certifier in this skein's address book: the onboarding app runs in the host skein");
+    const certifier = (try sk.peerAt(a, "local", "certifier")) orelse return sk.report("no certifier in this skein's address book: the onboarding app runs in the host skein");
     var m = cbor.MapBuilder.init(a);
     try m.put("kind", cbor.string("handle-issuance"));
     try m.put("handle", cbor.string(handle));
@@ -858,7 +858,7 @@ fn search(a: Allocator, req: Value) !Value {
 
 fn manifestRoute(a: Allocator) !Value {
     const cfg = try config(a);
-    const certifier = sk.provider(a, "certifier") catch return plainError(a, 503, "no certifier in this skein's address book: the onboarding app runs in the host skein");
+    const certifier = (try sk.peerAt(a, "local", "certifier")) orelse return plainError(a, 503, "no certifier in this skein's address book: the onboarding app runs in the host skein");
     var t = cbor.MapBuilder.init(a);
     try t.put("name", cbor.optStr(cfg.name));
     try t.put("note", cbor.optStr(cfg.note));
