@@ -1,5 +1,5 @@
 // skein-onboard (shruggr/skein#90): the onboarding app, installed in the host
-// skein. Zig 0.16.0, wasm32-wasi, over the SDK (skein-sdk: `cbor`, `sk`,
+// skein. Zig 0.16.0, wasm32-wasi, over the SDK (skein-sdk: `cbor`, `sk`, `secp`,
 // `app`, `dagjson`).
 //
 //   zig build        → zig-out/bin/onboard.wasm
@@ -35,6 +35,7 @@ fn module(b: *std.Build, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMod
             .{ .name = "sk", .module = sdk.module("sk") },
             .{ .name = "app", .module = sdk.module("app") },
             .{ .name = "dagjson", .module = sdk.module("dagjson") },
+            .{ .name = "secp", .module = sdk.module("secp") },
         },
     });
 }
