@@ -1,7 +1,7 @@
 {
   "kind": "app",
   "name": "onboard",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "programs": {
     "onboard": "bin/onboard.wasm"
   },
@@ -59,7 +59,7 @@
     {
       "transport": "http",
       "address": "/register",
-      "sender": "*",
+      "sender": "session",
       "program": "onboard",
       "fn": "register"
     },

@@ -9,7 +9,7 @@ certificate. Every handle the host certifies is recorded here; resolve,
 search and the manifest are answered from those records. The app asks the
 host's **instance manager** for every instance and the host's **certifier**
 for every signature; it holds no key. It finds both in its address book by
-transport and address (`local` `manager`, `local` `certifier`). Version **0.3.2**.
+transport and address (`local` `manager`, `local` `certifier`). Version **0.3.3**.
 
 ## What it is
 
@@ -18,7 +18,7 @@ One program, `bin/onboard.wasm`, on six rows (installed under `/onboard/`):
 | route | sender | body / query | answer |
 |---|---|---|---|
 | `POST /onboard/call` | `session` | `{fn: "onboard.create", args: {handle, image?, claim}}` | `{fn, result: {handle, identity, url}}` |
-| `POST /onboard/register` | `*` | `{username, identityKey, signature}` | `{handle, domain, identityKey, messagebox, certificate, keyringForSubject}` |
+| `POST /onboard/register` | session | `{username, identityKey, signature}` | `{handle, domain, identityKey, messagebox, certificate, keyringForSubject}` |
 | `POST /onboard/profile` | `*` | `{handle, record, signature}` | `{handle, profile, displayName?, avatarURL?}` |
 | `GET /onboard/resolve` | `*` | `?handle=<handle>[@<domain>]` | BRC-169 §5.2 |
 | `GET /onboard/search` | `*` | `?q=&limit=` | BRC-169 §5.6 |
@@ -44,7 +44,10 @@ skein, each request an entry in its log.
 
 ### Registering (`POST /onboard/register`)
 
-The body: `username` (a host name label), `identityKey` (hex), and
+A registration is a write, so it is a signed request (shruggr/skein#135):
+it comes over the registrant's BRC-104 session (the stock `AuthFetch`; the
+router carries the handshake at the host's own origin to the host skein),
+and the registrant is the session's identity. The body: `username` (a host name label), `identityKey` (hex), and
 `signature` (hex DER): the key's `createSignature` under
 `[2, "skein register"]`, key ID the username, counterparty `anyone`, over
 the UTF-8 text `register <username>@<domain>` — the domain is this host's
@@ -52,7 +55,8 @@ the UTF-8 text `register <username>@<domain>` — the domain is this host's
 `/.well-known/skein-host`), so a registration signed for one host is not
 good at another.
 
-1. The route handler checks the body (400), the signature (401), the name
+1. The route handler checks the session (401: none), the body (400), that
+   `identityKey` is the session's (403), the signature (401), the name
    (409: reserved — `id`, `host` — or another key's), and that the key holds
    no other handle here (409: one key, one handle). It records the request
    and launches a thread; the client's connection is held until the thread
@@ -133,7 +137,7 @@ certifier in its address book); then the operator installs this app into
 it:
 
 ```
-skein-host install https://github.com/shruggr/skein-onboard#v0.3.2 --instance host \
+skein-host install https://github.com/shruggr/skein-onboard#v0.3.3 --instance host \
   --config '{"onboard": {"domain": "skein.nexus"}}'
 ```
 
@@ -172,7 +176,7 @@ certificate), at the commit pinned in `src/testapps.ts`.
 
 | | |
 |---|---|
-| this app | 0.3.2 (tag `v0.3.2`): skein-sdk v0.7.1; 0.3.1: the manager and the certifier found by `sk.peerAt("local", …)` (the address book has no roles, shruggr/skein#126); 0.3.0: `onboard.create` takes the caller's signed claim (shruggr/skein#127) |
+| this app | 0.3.3 (tag `v0.3.3`): `/register` takes a session, the registrant its identity (shruggr/skein#135); 0.3.2: skein-sdk v0.7.1; 0.3.1: the manager and the certifier found by `sk.peerAt("local", …)` (the address book has no roles, shruggr/skein#126); 0.3.0: `onboard.create` takes the caller's signed claim (shruggr/skein#127) |
 | skein-sdk | v0.7.1, by tag tarball and hash in `build.zig.zon` (`cbor`, `sk`, `app`, `dagjson`, `secp`; no wallet) |
 | skein | log format 8; skein's tests pin this repo by commit |
 

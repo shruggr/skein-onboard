@@ -9,7 +9,8 @@
 //! the open ones: docs/MESSAGES.md in skein, "BRC-169 is discovery"):
 //!
 //!   POST /onboard/call           sender session   {fn: "onboard.create", args: {handle, image?, claim}} → {handle, identity, url}
-//!   POST /onboard/register       sender *         {username, identityKey, signature} → a mailbox instance and its certificate
+//!   POST /onboard/register       sender session   {username, identityKey, signature} → a mailbox instance and its certificate
+//!                                                   (identityKey the session's: shruggr/skein#135, a write is signed)
 //!   POST /onboard/profile        sender *         {handle, record, signature} → the holder's signed profile kept
 //!   GET  /onboard/resolve        sender *         ?handle=<handle>[@<domain>] → BRC-169 §5.2
 //!   GET  /onboard/search         sender *         ?q=&limit= → BRC-169 §5.6
@@ -501,10 +502,13 @@ pub fn registrationSigned(a: Allocator, r: Registration, domain: []const u8) !bo
 fn register(a: Allocator, in: Value, req: Value) !Value {
     if (req.get("resolved")) |r| return finishRegister(a, r);
     if (!eql(u8, Value.str(req.get("method")) orelse "", "POST")) return plainError(a, 405, "POST {username, identityKey, signature}");
+    // shruggr/skein#135: a registration is a write, so a signed request: the registrant is the session's identity.
+    const caller = Value.bytesOf(req.get("caller")) orelse return plainError(a, 401, "registration needs a BRC-104 session: the registrant is its identity");
     const reg = switch (try parseRegistration(a, Value.bytesOf(req.get("body")) orelse "")) {
         .ok => |x| x,
         .fail => |f| return plainError(a, f.status, f.message),
     };
+    if (!eql(u8, reg.key, caller)) return plainError(a, 403, "identityKey is not the session's identity");
     const cfg = try config(a);
     if (!try registrationSigned(a, reg, cfg.domain))
         return plainError(a, 401, try std.fmt.allocPrint(a, "the signature does not verify for that identity (it signs \"{s}\")", .{try registerText(a, reg.username, cfg.domain)}));
