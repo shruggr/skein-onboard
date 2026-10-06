@@ -5,16 +5,20 @@
 //! certificate issued through the host's certifier and recorded here, and
 //! resolved and searched from those records.
 //!
-//! Rows (installed under /onboard/; the router maps the host's own origin onto
-//! the open ones: docs/MESSAGES.md in skein, "BRC-169 is discovery"):
+//! Rows and reads (installed under /onboard/; the router maps the host's own
+//! origin onto them: docs/MESSAGES.md in skein, "BRC-169 is discovery"). A
+//! row is a message route: a signed request, an entry. A read
+//! (shruggr/skein#135) is served by a call over the current state: anyone,
+//! signed or not, nothing logged.
 //!
-//!   POST /onboard/call           sender session   {fn: "onboard.create", args: {handle, image?, claim}} → {handle, identity, url}
-//!   POST /onboard/register       sender session   {username, identityKey, signature} → a mailbox instance and its certificate
-//!                                                   (identityKey the session's: shruggr/skein#135, a write is signed)
-//!   POST /onboard/profile        sender *         {handle, record, signature} → the holder's signed profile kept
-//!   GET  /onboard/resolve        sender *         ?handle=<handle>[@<domain>] → BRC-169 §5.2
-//!   GET  /onboard/search         sender *         ?q=&limit= → BRC-169 §5.6
-//!   GET  /onboard/manifest.json  sender *         BRC-169 §5.1: the trust anchor (the certifier's key), the endpoints
+//!   POST /onboard/call           row, sender session   {fn: "onboard.create", args: {handle, image?, claim}} → {handle, identity, url}
+//!   POST /onboard/register       row, sender session   {username, identityKey, signature} → a mailbox instance and its certificate
+//!                                                       (identityKey the session's: shruggr/skein#135, a write is signed)
+//!   POST /onboard/profile        row, sender *         {handle, record, signature} → the holder's signed profile kept (a write: signed)
+//!   GET  /onboard/resolve        read                  ?handle=<handle>[@<domain>] → BRC-169 §5.2
+//!   GET  /onboard/search         read                  ?q=&limit= → BRC-169 §5.6
+//!   GET  /onboard/manifest.json  read                  BRC-169 §5.1: the trust anchor (the certifier's key), the endpoints
+//!   GET  /onboard/bsvalias/id/…  read (prefix)         the paymail PKI
 //!
 //! The configuration (`config.onboard` of the installed manifest; skein-host
 //! install --config writes it): `domain` — the one domain this host's handles

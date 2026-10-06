@@ -9,26 +9,34 @@ certificate. Every handle the host certifies is recorded here; resolve,
 search and the manifest are answered from those records. The app asks the
 host's **instance manager** for every instance and the host's **certifier**
 for every signature; it holds no key. It finds both in its address book by
-transport and address (`local` `manager`, `local` `certifier`). Version **0.3.3**.
+transport and address (`local` `manager`, `local` `certifier`). Version **0.3.4**.
 
 ## What it is
 
-One program, `bin/onboard.wasm`, on six rows (installed under `/onboard/`):
+One program, `bin/onboard.wasm`, on three rows and four reads (installed
+under `/onboard/`). A row is a message route: the request is signed (a
+BRC-104 session) and is an entry in the log. A read (shruggr/skein#135) is
+served by a call over the current state: anyone, signed or not, any method,
+nothing logged.
 
-| route | sender | body / query | answer |
-|---|---|---|---|
-| `POST /onboard/call` | `session` | `{fn: "onboard.create", args: {handle, image?, claim}}` | `{fn, result: {handle, identity, url}}` |
-| `POST /onboard/register` | session | `{username, identityKey, signature}` | `{handle, domain, identityKey, messagebox, certificate, keyringForSubject}` |
-| `POST /onboard/profile` | `*` | `{handle, record, signature}` | `{handle, profile, displayName?, avatarURL?}` |
-| `GET /onboard/resolve` | `*` | `?handle=<handle>[@<domain>]` | BRC-169 §5.2 |
-| `GET /onboard/search` | `*` | `?q=&limit=` | BRC-169 §5.6 |
-| `GET /onboard/manifest.json` | `*` | | BRC-169 §5.1 |
+| route | | sender | body / query | answer |
+|---|---|---|---|---|
+| `POST /onboard/call` | row | `session` | `{fn: "onboard.create", args: {handle, image?, claim}}` | `{fn, result: {handle, identity, url}}` |
+| `POST /onboard/register` | row | `session` | `{username, identityKey, signature}` | `{handle, domain, identityKey, messagebox, certificate, keyringForSubject}` |
+| `POST /onboard/profile` | row | `*` (any key, signed) | `{handle, record, signature}` | `{handle, profile, displayName?, avatarURL?}` |
+| `GET /onboard/resolve` | read | | `?handle=<handle>[@<domain>]` | BRC-169 §5.2 |
+| `GET /onboard/search` | read | | `?q=&limit=` | BRC-169 §5.6 |
+| `GET /onboard/manifest.json` | read | | | BRC-169 §5.1 |
+| `GET /onboard/bsvalias/id/<handle>[@<domain>]` | read (prefix) | | | the paymail PKI |
 
-The host's router maps its own origin onto the open rows (skein
+The profile writes (it keeps the holder's signed record), so it is a row:
+a signed request, over any key's session, as registration is.
+
+The host's router maps its own origin onto these (skein
 `docs/MESSAGES.md`, "BRC-169 is discovery"): `/manifest.json`,
-`/.well-known/metanet-handles/resolve` and `/search`, `POST
-/account/register` and `POST /account/profile` reach this app in the host
-skein, each request an entry in its log.
+`/.well-known/metanet-handles/resolve` and `/search` and
+`/bsvalias/id/…` reach the reads, `POST /account/register` and `POST
+/account/profile` the rows, in the host skein.
 
 ### Configuration
 
@@ -124,7 +132,7 @@ this domain or not the shape; 404 no such handle) and kept under
 `bad-request` 400, `bad-args` 400, `not-admitted` 403 (no session),
 `unknown-fn` 404, `refused` 409 (the instance manager said no), `failed`
 500 (the thread failed: for one, no instance manager or certifier in this
-skein's address book, because the app is not in the host skein). The open
+skein's address book, because the app is not in the host skein). The
 routes answer `{error}` (register, profile) or §5.3's `{metanetHandles,
 error: {code, message}}` (resolve).
 
@@ -137,7 +145,7 @@ certifier in its address book); then the operator installs this app into
 it:
 
 ```
-skein-host install https://github.com/shruggr/skein-onboard#v0.3.3 --instance host \
+skein-host install https://github.com/shruggr/skein-onboard#v0.3.4 --instance host \
   --config '{"onboard": {"domain": "skein.nexus"}}'
 ```
 
@@ -176,7 +184,7 @@ certificate), at the commit pinned in `src/testapps.ts`.
 
 | | |
 |---|---|
-| this app | 0.3.3 (tag `v0.3.3`): `/register` takes a session, the registrant its identity (shruggr/skein#135); 0.3.2: skein-sdk v0.7.1; 0.3.1: the manager and the certifier found by `sk.peerAt("local", …)` (the address book has no roles, shruggr/skein#126); 0.3.0: `onboard.create` takes the caller's signed claim (shruggr/skein#127) |
+| this app | 0.3.4 (tag `v0.3.4`): resolve, search, the manifest and the paymail PKI are reads (`reads[]`, shruggr/skein#135: served by a call, nothing logged); `/profile` stays a row and takes a signed request; 0.3.3: `/register` takes a session, the registrant its identity (shruggr/skein#135); 0.3.2: skein-sdk v0.7.1; 0.3.1: the manager and the certifier found by `sk.peerAt("local", …)` (the address book has no roles, shruggr/skein#126); 0.3.0: `onboard.create` takes the caller's signed claim (shruggr/skein#127) |
 | skein-sdk | v0.7.1, by tag tarball and hash in `build.zig.zon` (`cbor`, `sk`, `app`, `dagjson`, `secp`; no wallet) |
 | skein | log format 8; skein's tests pin this repo by commit |
 
