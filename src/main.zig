@@ -403,6 +403,8 @@ fn route(a: Allocator, in: Value, req: Value) !Value {
     };
     if (req.get("resolved")) |r| return finish(a, r, ask.func);
     if (policy(caller, ask)) |f| return failure(a, CREATE, f);
+    // shruggr/skein#131: a registered handle is not an instance here; a skein may not take its name.
+    if (try certificateRecord(a, ask.handle)) |_| return failure(a, CREATE, .{ .status = 409, .code = "refused", .message = try std.fmt.allocPrint(a, "handle {s} is taken", .{ask.handle}) });
     // The request, recorded: the create thread's arguments.
     var r = cbor.MapBuilder.init(a);
     try r.put("kind", cbor.string("onboard-request"));
@@ -686,13 +688,15 @@ fn createThread(a: Allocator, in: Value, args: Value) !void {
 
 /// Ask the instance manager whether `key` holds `role` on the skein named
 /// `skein` (its handle here, or its identity key in hex): holds {skein, key,
-/// role} → {handle, identity, url, holds} (or {error}: no such skein here).
-fn askHolds(a: Allocator, skein: []const u8, key: []const u8, role: []const u8) !void {
+/// role, name} → {handle, identity, url, holds, taken?} (or {error}: no such
+/// skein here). `taken`: `name` is another instance's handle on this host.
+fn askHolds(a: Allocator, skein: []const u8, key: []const u8, role: []const u8, name: []const u8) !void {
     const manager = (try sk.peerAt(a, "local", "manager")) orelse return sk.report("no instance manager in this skein's address book: the onboarding app runs in the host skein");
     var q = cbor.MapBuilder.init(a);
     try q.put("skein", cbor.string(skein));
     try q.put("key", .{ .bytes = key });
     try q.put("role", cbor.string(role));
+    try q.put("name", cbor.string(name));
     try sk.awaitRecord(try sk.emit(a, manager, "holds", q.value(), null));
 }
 
@@ -712,6 +716,8 @@ fn registerThread(a: Allocator, in: Value, args: Value) !void {
             if (Value.str(r.body.get("error"))) |e| return errorAnswer(a, e, 404);
             const holds = if (r.body.get("holds")) |x| x == .bool and x.bool else false;
             if (!holds) return errorAnswer(a, try std.fmt.allocPrint(a, "{s} does not hold root on the skein {s}: a handle is registered from a skein whose root you hold", .{ try sk.hex(a, subject), skein }), 403);
+            if (if (r.body.get("taken")) |x| x == .bool and x.bool else false)
+                return errorAnswer(a, try std.fmt.allocPrint(a, "username {s} is taken (an instance on this host)", .{handle}), 409);
             const url = Value.str(r.body.get("url")) orelse return sk.report("the instance manager's answer has no url");
             const identity = Value.bytesOf(r.body.get("identity")) orelse return sk.report("the instance manager's answer has no identity");
             // The name checked again: another key may have taken it while the manager was asked.
@@ -736,7 +742,7 @@ fn registerThread(a: Allocator, in: Value, args: Value) !void {
         }
         return sk.report("an answer in an unexpected box");
     }
-    return askHolds(a, skein, subject, "root");
+    return askHolds(a, skein, subject, "root", handle);
 }
 
 // ---------------------------------------------------------------- the profile (kernel.brc104, role user; the body signed by the handle's key)

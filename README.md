@@ -84,11 +84,14 @@ handle on this host or its identity key (hex).
    that the key holds no other handle here (409: one key, one handle). It
    records the request and launches a thread; the client's connection is
    held until the thread comes to rest.
-2. The thread emits `holds {skein, key: <the key>, role: "root"}` to the
-   instance manager and rests. The manager finds the skein on this host (by
-   handle or identity, published) and reads its kernel's head `grants`: it answers `{handle, identity, url, holds}`, or
-   `{error}` when there is no such skein here (404).
-3. `holds` false: 403 (the key does not hold root on that skein). Otherwise
+2. The thread emits `holds {skein, key: <the key>, role: "root", name:
+   <the username>}` to the instance manager and rests. The manager finds
+   the skein on this host (by handle or identity, published) and reads its
+   kernel's head `grants`: it answers `{handle, identity, url, holds,
+   taken?}` (`taken`: the username is another instance's handle on this
+   host), or `{error}` when there is no such skein here (404).
+3. `holds` false: 403 (the key does not hold root on that skein); `taken`:
+   409. Otherwise
    the thread puts the **issuance record** `{kind: "handle-issuance",
    handle, domain, subject, messagebox: <the skein's url>, skein: <its
    identity>, issuedAt, request, prev?}` and emits `issue {handle, domain,
@@ -112,7 +115,9 @@ handle moves to the skein named; resolve answers the newest record).
 
 `onboard.create` asks the manager to `create {handle, owner, image?, domain,
 claim}` from the default image, and the new instance's handle is certified
-for the instance's own identity, its messagebox the instance's origin. Its owner
+for the instance's own identity, its messagebox the instance's origin. A
+handle already registered here is refused (409): a skein may not take a
+registered handle's name. Its owner
 is whoever signed its claim (shruggr/skein#127), and the page signs it:
 
 - `args.claim` is `{message, body}`: `message` a mail record `{kind:
