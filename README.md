@@ -4,12 +4,14 @@ The onboarding app for a [skein](https://github.com/shruggr/skein) host:
 installed in the **host skein** (the operator's own instance on a host), it
 gives anyone with a wallet a place on the host, and it is the host's
 **BRC-169 server**. A page with a BRC-104 session gets a skein of its own; a
-wallet that signs a registration gets a mailbox instance and a handle
-certificate. Every handle the host certifies is recorded here; resolve,
+key that holds root on a skein here registers a handle from it, and gets a
+handle certificate whose messagebox is that skein (there are no mailbox-only
+instances: shruggr/skein#131). Every handle the host certifies is recorded here; resolve,
 search and the manifest are answered from those records. The app asks the
-host's **instance manager** for every instance and the host's **certifier**
-for every signature; it holds no key. It finds both in its address book by
-transport and address (`local` `manager`, `local` `certifier`). Version **0.4.0**.
+host's **instance manager** for every instance (and whether a key holds
+root on one) and the host's **certifier** for every signature; it holds no
+key. It finds both in its address book by transport and address (`local`
+`manager`, `local` `certifier`). Version **0.5.0**.
 
 ## What it is
 
@@ -25,7 +27,7 @@ state — anyone, signed or not, any method, nothing logged.
 | route | filters | role | body / query | answer |
 |---|---|---|---|---|
 | `POST /onboard/call` | `kernel.brc104` | `user` | `{fn: "onboard.create", args: {handle, image?, claim}}` | `{fn, result: {handle, identity, url}}` |
-| `POST /onboard/register` | `kernel.brc104` | `user` | `{username, identityKey, signature}` | `{handle, domain, identityKey, messagebox, certificate, keyringForSubject}` |
+| `POST /onboard/register` | `kernel.brc104` | `user` | `{username, identityKey, signature, skein}` | `{handle, domain, identityKey, messagebox, certificate, keyringForSubject}` |
 | `POST /onboard/profile` | `kernel.brc104` | `user` | `{handle, record, signature}` | `{handle, profile, displayName?, avatarURL?}` |
 | `GET /onboard/resolve` | `resolve` (read) | | `?handle=<handle>[@<domain>]` | BRC-169 §5.2 |
 | `GET /onboard/search` | `search` (read) | | `?q=&limit=` | BRC-169 §5.6 |
@@ -60,50 +62,57 @@ The host's router maps its own origin onto these (skein
 
 ### Registering (`POST /onboard/register`)
 
+A handle is registered from a skein (shruggr/skein#131): you spin up a skein
+first, then register a handle that points at it. Registering creates no
+instance; the handle's messagebox is the hosting skein's origin.
+
 A registration is a write, so it is a signed request (shruggr/skein#135):
 it comes over the registrant's BRC-104 session (the stock `AuthFetch`; the
 router carries the handshake at the host's own origin to the host skein),
-and the registrant is the session's identity. The body: `username` (a host name label), `identityKey` (hex), and
-`signature` (hex DER): the key's `createSignature` under
-`[2, "skein register"]`, key ID the username, counterparty `anyone`, over
-the UTF-8 text `register <username>@<domain>` — the domain is this host's
-(`config.onboard.domain`, which the router also answers at
-`/.well-known/skein-host`), so a registration signed for one host is not
-good at another.
+and the registrant is the session's identity. The body: `username` (a host
+name label), `identityKey` (hex), `signature` (hex DER): the key's
+`createSignature` under `[2, "skein register"]`, key ID the username,
+counterparty `anyone`, over the UTF-8 text `register <username>@<domain>` —
+the domain is this host's (`config.onboard.domain`, which the router also
+answers at `/.well-known/skein-host`), so a registration signed for one host
+is not good at another — and `skein`: the skein that hosts the handle, its
+handle on this host or its identity key (hex).
 
-1. The route handler checks the session (401: none), the body (400), that
-   `identityKey` is the session's (403), the signature (401), the name
-   (409: reserved — `id`, `host` — or another key's), and that the key holds
-   no other handle here (409: one key, one handle). It records the request
-   and launches a thread; the client's connection is held until the thread
-   comes to rest.
-2. The thread emits `create {handle, owner: <the key>, image: "mailbox",
-   domain}` to the instance manager (unless the key holds this handle
-   already) and rests. The manager creates the mailbox instance and answers
-   `{handle, identity, url}` (or `{error}`: the handle is an instance's,
-   409). The answer is recorded under `onboard/instances/<handle>`.
-3. The thread puts the **issuance record** `{kind: "handle-issuance",
-   handle, domain, subject, messagebox, issuedAt, request, prev?}` and emits
-   `issue {handle, domain, subject, serialNumber, issuance}` to the
-   certifier. The serial number is base64 of the issuance record's SHA-256
-   (the digest its CID names): every issue has its own, a re-registration
-   included.
+1. The route handler checks the session (401: none), the body (400; no
+   `skein`: 400), that `identityKey` is the session's (403), the signature
+   (401), the name (409: reserved — `id`, `host` — or another key's), and
+   that the key holds no other handle here (409: one key, one handle). It
+   records the request and launches a thread; the client's connection is
+   held until the thread comes to rest.
+2. The thread emits `holds {skein, key: <the key>, role: "root"}` to the
+   instance manager and rests. The manager finds the skein on this host (by
+   handle or identity, published) and reads its kernel's head `grants`: it answers `{handle, identity, url, holds}`, or
+   `{error}` when there is no such skein here (404).
+3. `holds` false: 403 (the key does not hold root on that skein). Otherwise
+   the thread puts the **issuance record** `{kind: "handle-issuance",
+   handle, domain, subject, messagebox: <the skein's url>, skein: <its
+   identity>, issuedAt, request, prev?}` and emits `issue {handle, domain,
+   subject, serialNumber, issuance}` to the certifier. The serial number is
+   base64 of the issuance record's SHA-256 (the digest its CID names): every
+   issue has its own, a re-registration included.
 4. The certifier answers `{certificate, holder: {certificate,
    keyringForSubject}, serialNumber, issuance}`: the plaintext certificate a
    resolver checks and the holder's copy (BRC-52 encrypted fields and the
    keyring a wallet's `acquireCertificate` takes). The thread writes the
    **certificate record** `{kind: "handle-certificate", handle, domain,
-   subject, messagebox, issuedAt, serialNumber, issuance, prev?,
+   subject, messagebox, skein, issuedAt, serialNumber, issuance, prev?,
    certificate, holder}`, moves `onboard/handles/<handle>` to it (its `prev`
    the record before: the trail of every issue) and the index
    `onboard/index` (`handles`: handle → record; `keys`: key → handle), and
    answers the page the holder's copy.
 
-The same key and name again: the mailbox stands, a new certificate is
-issued under a new serial (a wallet that removed the old one can take it).
+The same key and name again, naming a skein it holds root on: a new
+certificate under a new serial, its messagebox that skein's origin (the
+handle moves to the skein named; resolve answers the newest record).
 
-`onboard.create` goes the same way with the default image, and the new
-instance's handle is certified for the instance's own identity. Its owner
+`onboard.create` asks the manager to `create {handle, owner, image?, domain,
+claim}` from the default image, and the new instance's handle is certified
+for the instance's own identity, its messagebox the instance's origin. Its owner
 is whoever signed its claim (shruggr/skein#127), and the page signs it:
 
 - `args.claim` is `{message, body}`: `message` a mail record `{kind:
@@ -138,9 +147,7 @@ this domain or not the shape; 404 no such handle) and kept under
 
 ### Error codes of `/onboard/call`
 
-`bad-request` 400, `bad-args` 400, `not-admitted` 403 (no session; for
-`onboard.adopt`, a key that does not hold root in the host skein — the
-kernel's head `grants`),
+`bad-request` 400, `bad-args` 400, `not-admitted` 403 (no session),
 `unknown-fn` 404, `refused` 409 (the instance manager said no), `failed`
 500 (the thread failed: for one, no instance manager or certifier in this
 skein's address book, because the app is not in the host skein). register
@@ -188,14 +195,14 @@ certificate), at the commit pinned in `src/testapps.ts`.
 |---|---|
 | the program's contract | `src/main.zig` |
 | the host skein, the instance manager, the certifier | skein `docs/ARCH.md`, `docs/MESSAGES.md` "The providers" |
-| registration and BRC-169 | skein `docs/MESSAGES.md` "Mailbox instances", "BRC-169 is discovery" |
+| registration and BRC-169 | skein `docs/MESSAGES.md` "Handles", "BRC-169 is discovery" |
 | apps, manifests, install | skein `docs/APPS.md` |
 
 ## Versions
 
 | | |
 |---|---|
-| this app | 0.4.0 (tag `v0.4.0`): routes, filters and roles (shruggr/skein#143): `routes` with `kernel.brc104` and the role `user` for call, register and profile; the four reads are read routes whose filters answer `{answer: …}`; `onboard.adopt` is root's (the kernel's head `grants`; no `owner` step input); 0.3.4: resolve, search, the manifest and the paymail PKI are reads (`reads[]`, shruggr/skein#135: served by a call, nothing logged); `/profile` stays a row and takes a signed request; 0.3.3: `/register` takes a session, the registrant its identity (shruggr/skein#135); 0.3.2: skein-sdk v0.7.1; 0.3.1: the manager and the certifier found by `sk.peerAt("local", …)` (the address book has no roles, shruggr/skein#126); 0.3.0: `onboard.create` takes the caller's signed claim (shruggr/skein#127) |
+| this app | 0.5.0: a handle is registered from a skein (shruggr/skein#131): `/register` takes `skein`, asks the manager `holds {skein, key, role: "root"}`, creates no instance, and the messagebox is the hosting skein's origin; `onboard.adopt` removed (there are no mailbox instances to adopt); 0.4.0 (tag `v0.4.0`): routes, filters and roles (shruggr/skein#143): `routes` with `kernel.brc104` and the role `user` for call, register and profile; the four reads are read routes whose filters answer `{answer: …}`; `onboard.adopt` is root's (the kernel's head `grants`; no `owner` step input); 0.3.4: resolve, search, the manifest and the paymail PKI are reads (`reads[]`, shruggr/skein#135: served by a call, nothing logged); `/profile` stays a row and takes a signed request; 0.3.3: `/register` takes a session, the registrant its identity (shruggr/skein#135); 0.3.2: skein-sdk v0.7.1; 0.3.1: the manager and the certifier found by `sk.peerAt("local", …)` (the address book has no roles, shruggr/skein#126); 0.3.0: `onboard.create` takes the caller's signed claim (shruggr/skein#127) |
 | skein-sdk | v0.7.1, by tag tarball and hash in `build.zig.zon` (`cbor`, `sk`, `app`, `dagjson`, `secp`; no wallet) |
 | skein | log format 9 (shruggr/skein#143); skein's tests pin this repo by commit |
 
