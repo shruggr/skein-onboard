@@ -15,8 +15,9 @@
 //! logged.
 //!
 //!   POST /onboard/call           kernel.brc104, user   {fn: "onboard.create", args: {handle, image?, claim}} → {handle, identity, url}
-//!   POST /onboard/register       kernel.brc104, user   {username, identityKey, signature} → a mailbox instance and its certificate
-//!                                                       (identityKey the principal's: shruggr/skein#135, a write is signed)
+//!   POST /onboard/register       kernel.brc104, user   {username, identityKey, signature} → the handle's certificate
+//!                                                       (identityKey the principal's: shruggr/skein#135, a write is signed;
+//!                                                       no instance: the handle's messagebox is the configured one)
 //!   POST /onboard/profile        kernel.brc104, user   {handle, record, signature} → the holder's signed profile kept
 //!                                                       (the body signed by the handle's key, checked here: any session may carry it)
 //!   GET  /onboard/resolve        read (filter resolve)  ?handle=<handle>[@<domain>] → BRC-169 §5.2
@@ -28,13 +29,17 @@
 //! install --config writes it): `domain` — the one domain this host's handles
 //! are at, `<handle>@<domain>` (default `localhost`); `origin` — where the
 //! host's own origin is, published in the manifest (default
-//! `https://<domain>`); `name`, `note`, `icon` — the host's presentation in
-//! `metanet.trust`; `ordfs` — the ORDFS content route an avatar's URL is
-//! derived under (default https://api.1sat.app/content; empty: none).
+//! `https://<domain>`); `messagebox` — the messagebox URL every handle
+//! registered here is certified with (the host skein's own URL plus the
+//! messagebox app's path, `https://accounts.testnet.1sat.app/messagebox`: the
+//! messagebox app hosts the keys this app records in `onboard/index`); `name`,
+//! `note`, `icon` — the host's presentation in `metanet.trust`; `ordfs` — the
+//! ORDFS content route an avatar's URL is derived under (default
+//! https://api.1sat.app/content; empty: none).
 //!
 //! The heads (all under `onboard/`, the app's write scope):
 //!
-//!   onboard/instances/<handle>   → the instance manager's answer record (create and register alike)
+//!   onboard/instances/<handle>   → the instance manager's answer record (a create's)
 //!   onboard/handles/<handle>     → the handle's current certificate record; its `prev` the one before:
 //!                                  the trail of every issue, for revocation later
 //!   onboard/profiles/<handle>    → the holder's signed profile record
@@ -77,8 +82,6 @@ const b64 = std.base64.standard;
 pub const NAME = "onboard";
 /// The one `{fn, args}` function: `<interface>.<function>` (skein-sdk `app`'s naming).
 pub const CREATE = "onboard.create";
-/// Root's (#143): an existing mailbox instance (a host.db row made before #113) recorded and certified.
-pub const ADOPT = "onboard.adopt";
 /// Where a created instance is recorded: `onboard/instances/<handle>` → the manager's answer.
 pub const INSTANCES = "onboard/instances/";
 /// A handle's current certificate record.
@@ -138,6 +141,8 @@ pub const Config = struct {
     note: ?[]const u8 = null,
     icon: ?[]const u8 = null,
     ordfs: []const u8 = ORDFS_CONTENT,
+    /// The messagebox URL a registered handle is certified with (null: not set — registration refuses).
+    messagebox: ?[]const u8 = null,
 };
 
 /// `config.onboard` of an app record (the manifest as installed).
@@ -154,6 +159,7 @@ pub fn configFrom(a: Allocator, manifest: Value) !Config {
     out.note = nonEmpty(Value.str(c.get("note")));
     out.icon = nonEmpty(Value.str(c.get("icon")));
     if (Value.str(c.get("ordfs"))) |o| out.ordfs = std.mem.trimEnd(u8, o, "/");
+    out.messagebox = nonEmpty(std.mem.trimEnd(u8, Value.str(c.get("messagebox")) orelse "", "/"));
     return out;
 }
 
@@ -185,24 +191,6 @@ pub fn filterAnswer(a: Allocator, response: Value) !Value {
     var m = cbor.MapBuilder.init(a);
     try m.put("answer", response);
     return m.value();
-}
-
-/// Whether `key` holds root in this skein (#143): the kernel's head `grants`,
-/// `{kind: "grants", roles: {root: [<key>…]}}` — the genesis's root holders, the
-/// claimant, and whom root granted root since.
-pub fn holdsRoot(grants: ?Value, key: []const u8) bool {
-    const g = grants orelse return false;
-    if (!eql(u8, Value.str(g.get("kind")) orelse "", "grants")) return false;
-    const roles: Value = g.get("roles") orelse return false;
-    const list: Value = roles.get("root") orelse return false;
-    if (list != .array) return false;
-    for (list.array) |k| if (eql(u8, Value.bytesOf(k) orelse "", key)) return true;
-    return false;
-}
-
-fn grantsOf(a: Allocator) !?Value {
-    const c = (try sk.head(a, "grants")) orelse return null;
-    return try sk.get(a, c);
 }
 
 /// `{error}` with a status: register's and profile's refusals.
@@ -334,24 +322,23 @@ fn handleOfKey(a: Allocator, idx: Value, key: []const u8) !?[]const u8 {
     return Value.str(keys.get(try sk.hex(a, key)));
 }
 
-// ---------------------------------------------------------------- the /call route: onboard.create, onboard.adopt
+// ---------------------------------------------------------------- the /call route: onboard.create
 
-/// What a call's body asks: {fn, args} checked down to its own args. `owner`: adopt's (hex):
-/// the mailbox instance's key (args, not the step input: #143 has no `owner` input).
+/// What a call's body asks: {fn, args} checked down to its own args.
 /// `claim`: create's — the caller's own signed claim {message, body} (shruggr/skein#127):
 /// a message in box `claim`, signed by the caller's wallet and naming no recipient (the
 /// instance does not exist yet), passed to the instance manager, which forwards it into
 /// the new instance as its first entry; the kernel grants root there to its signer (#143).
 /// This app does not sign it, read it or change it.
-pub const Ask = struct { func: []const u8, handle: []const u8, image: ?[]const u8 = null, owner: ?[]const u8 = null, claim: ?Value = null };
+pub const Ask = struct { func: []const u8, handle: []const u8, image: ?[]const u8 = null, claim: ?Value = null };
 
-/// The body {fn: "onboard.create" | "onboard.adopt", args} → the args,
+/// The body {fn: "onboard.create", args} → the args,
 /// checked against the declared shape (`decl`: the manifest's declaration of
 /// that fn, looked up by `declOf`), or why not.
 pub fn parseAsk(a: Allocator, body: Value, declOf: anytype) !union(enum) { ok: Ask, fail: Fail } {
     if (body != .map) return .{ .fail = .{ .status = 400, .code = "bad-request", .message = "the body is not {fn, args}" } };
     const name = Value.str(body.get("fn")) orelse return .{ .fail = .{ .status = 400, .code = "bad-request", .message = "fn is not text" } };
-    if (!eql(u8, name, CREATE) and !eql(u8, name, ADOPT)) return .{ .fail = .{ .status = 404, .code = "unknown-fn", .message = try std.fmt.allocPrint(a, "{s}: not provided by onboard (it provides {s}, {s})", .{ name, CREATE, ADOPT }) } };
+    if (!eql(u8, name, CREATE)) return .{ .fail = .{ .status = 404, .code = "unknown-fn", .message = try std.fmt.allocPrint(a, "{s}: not provided by onboard (it provides {s})", .{ name, CREATE }) } };
     const args: Value = switch (body.get("args") orelse Value.null) {
         .null => .{ .map = &.{} },
         else => |v| v,
@@ -359,11 +346,6 @@ pub fn parseAsk(a: Allocator, body: Value, declOf: anytype) !union(enum) { ok: A
     if (try declOf.get(a, name)) |d| if (try app.check(a, d.get("args") orelse Value{ .map = &.{} }, args, "args")) |why|
         return .{ .fail = .{ .status = 400, .code = "bad-args", .message = why } };
     const handle = Value.str(args.get("handle")) orelse return .{ .fail = .{ .status = 400, .code = "bad-args", .message = "args.handle: missing" } };
-    if (eql(u8, name, ADOPT)) {
-        const owner = Value.str(args.get("owner")) orelse "";
-        if (!secp.isIdentity(owner)) return .{ .fail = .{ .status = 400, .code = "bad-args", .message = "args.owner: an identity key (hex)" } };
-        return .{ .ok = .{ .func = ADOPT, .handle = handle, .owner = owner } };
-    }
     return .{ .ok = .{ .func = CREATE, .handle = handle, .image = Value.str(args.get("image")), .claim = args.get("claim") } };
 }
 
@@ -385,7 +367,7 @@ pub fn policy(owner: []const u8, ask: Ask) ?Fail {
     return null;
 }
 
-/// The checks a registration (and an adoption) passes before its thread: the
+/// The checks a registration passes before its thread: the
 /// name not reserved, not another key's; the key holding no other handle here.
 fn registrationRefusal(a: Allocator, username: []const u8, key: []const u8) !?[]const u8 {
     if (isReserved(username)) return try std.fmt.allocPrint(a, "username {s} is reserved", .{username});
@@ -398,14 +380,14 @@ fn registrationRefusal(a: Allocator, username: []const u8, key: []const u8) !?[]
 }
 
 /// The register thread's arguments: the request, recorded.
-fn registrationRecord(a: Allocator, in: Value, req: Value, username: []const u8, domain: []const u8, key: []const u8, signature: ?[]const u8) ![]u8 {
+fn registrationRecord(a: Allocator, in: Value, req: Value, username: []const u8, domain: []const u8, key: []const u8, signature: []const u8) ![]u8 {
     const existing = if (try certificateRecord(a, username)) |rec| eql(u8, Value.bytesOf(rec.get("subject")) orelse "", key) else false;
     var r = cbor.MapBuilder.init(a);
     try r.put("kind", cbor.string("onboard-register"));
     try r.put("handle", cbor.string(username));
     try r.put("domain", cbor.string(domain));
     try r.put("subject", .{ .bytes = key });
-    if (signature) |s| try r.put("signature", .{ .bytes = s }) else try r.put("adopted", .{ .bool = true });
+    try r.put("signature", .{ .bytes = signature });
     try r.put("existing", .{ .bool = existing });
     try r.put("issuedAt", in.get("now"));
     try r.put("request", cbor.optCid(Value.cidOf(req.get("request"))));
@@ -426,16 +408,6 @@ fn route(a: Allocator, in: Value, req: Value) !Value {
         .fail => |f| return failure(a, Value.str(body.get("fn")) orelse "", f),
     };
     if (req.get("resolved")) |r| return finish(a, r, ask.func);
-    if (eql(u8, ask.func, ADOPT)) {
-        // Root's (#143: a key holding root in the host skein — the operator's): an existing
-        // mailbox instance (host.db) recorded and certified, as a registration without the holder's signature.
-        if (!holdsRoot(try grantsOf(a), caller)) return failure(a, ADOPT, .{ .status = 403, .code = "not-admitted", .message = "adopt is root's (a key holding root in the host skein)" });
-        const key = sk.unhex(a, ask.owner.?).?;
-        if (!isLabel(ask.handle)) return failure(a, ADOPT, .{ .status = 400, .code = "bad-args", .message = "args.handle: a host name label" });
-        if (try registrationRefusal(a, ask.handle, key)) |why| return failure(a, ADOPT, .{ .status = 409, .code = "refused", .message = why });
-        _ = try sk.launch(a, try selfProgram(req), try registrationRecord(a, in, req, ask.handle, (try configFrom(a, manifest)).domain, key, null));
-        return wait(a);
-    }
     if (policy(caller, ask)) |f| return failure(a, CREATE, f);
     // The request, recorded: the create thread's arguments.
     var r = cbor.MapBuilder.init(a);
@@ -461,17 +433,6 @@ fn finish(a: Allocator, resolved: Value, func: []const u8) !Value {
         .ok => |v| v,
         .failed => |m| return failure(a, func, .{ .status = 500, .code = "failed", .message = m }),
     };
-    if (eql(u8, func, ADOPT)) {
-        if (Value.str(out.get("error"))) |e| return failure(a, ADOPT, .{ .status = 409, .code = "refused", .message = e });
-        var res = cbor.MapBuilder.init(a);
-        for ([_][]const u8{ "handle", "domain", "identityKey", "messagebox" }) |k| try res.put(k, out.get(k));
-        const c: Value = out.get("certificate") orelse .null;
-        try res.put("serialNumber", c.get("serialNumber"));
-        var m = cbor.MapBuilder.init(a);
-        try m.put("fn", cbor.string(ADOPT));
-        try m.put("result", res.value());
-        return json(a, 200, m.value());
-    }
     return answerOf(a, out);
 }
 
@@ -552,6 +513,7 @@ fn register(a: Allocator, in: Value, req: Value) !Value {
     if (!try registrationSigned(a, reg, cfg.domain))
         return plainError(a, 401, try std.fmt.allocPrint(a, "the signature does not verify for that identity (it signs \"{s}\")", .{try registerText(a, reg.username, cfg.domain)}));
     if (try registrationRefusal(a, reg.username, reg.key)) |why| return plainError(a, 409, why);
+    if (cfg.messagebox == null) return plainError(a, 503, "no messagebox here: config.onboard.messagebox is not set");
     _ = try sk.launch(a, try selfProgram(req), try registrationRecord(a, in, req, reg.username, cfg.domain, reg.key, reg.signature));
     return wait(a);
 }
@@ -720,18 +682,20 @@ fn createThread(a: Allocator, in: Value, args: Value) !void {
     return askManager(a, handle, owner, args.get("image"), cfg.domain, args.get("claim"));
 }
 
-/// register: a mailbox instance for the key (the manager's create, image
-/// `mailbox`) unless it has one here, then its certificate; the holder's copy answered.
+/// The messagebox a registration is certified with: the configured one for a new handle; for a key
+/// that holds the handle already, the one its last certificate names.
+pub fn messageboxFor(cfg: Config, prev: ?Value) ?[]const u8 {
+    if (prev) |p| if (Value.str(p.get("messagebox"))) |m| return m;
+    return cfg.messagebox;
+}
+
+/// register: the handle's certificate, its messagebox the configured one (no instance is made);
+/// the holder's copy answered.
 fn registerThread(a: Allocator, in: Value, args: Value) !void {
     const handle = Value.str(args.get("handle")) orelse return sk.report("the registration names no handle");
     const domain = Value.str(args.get("domain")) orelse return sk.report("the registration names no domain");
     const subject = Value.bytesOf(args.get("subject")) orelse return sk.report("the registration names no key");
     if (try sk.replyOf(a, in)) |r| {
-        if (eql(u8, r.box, "create")) {
-            if (Value.str(r.body.get("error"))) |e| return errorAnswer(a, e, 409);
-            const ans = try recordInstance(a, in, r, handle);
-            return issue(a, args, handle, domain, subject, Value.str(ans.get("url")) orelse "");
-        }
         if (eql(u8, r.box, "issue")) {
             const rec = switch (try certified(a, r, handle)) {
                 .err => |e| return errorAnswer(a, try std.fmt.allocPrint(a, "the certificate was not issued: {s}", .{e}), 500),
@@ -750,13 +714,15 @@ fn registerThread(a: Allocator, in: Value, args: Value) !void {
         return sk.report("an answer in an unexpected box");
     }
     const existing = if (args.get("existing")) |e| e == .bool and e.bool else false;
+    const cfg = try config(a);
     if (existing) {
         // The key holds this handle already: its mailbox stands; a new certificate (a new serial).
         const prev = (try certificateRecord(a, handle)) orelse return sk.report("the registration's record is gone");
         if (!eql(u8, Value.bytesOf(prev.get("subject")) orelse "", subject)) return errorAnswer(a, try std.fmt.allocPrint(a, "username {s} is taken", .{handle}), 409);
-        return issue(a, args, handle, domain, subject, Value.str(prev.get("messagebox")) orelse "");
+        return issue(a, args, handle, domain, subject, messageboxFor(cfg, prev) orelse "");
     }
-    return askManager(a, handle, subject, cbor.string("mailbox"), domain, null);
+    const mb = messageboxFor(cfg, null) orelse return errorAnswer(a, "no messagebox here: config.onboard.messagebox is not set", 503);
+    return issue(a, args, handle, domain, subject, mb);
 }
 
 // ---------------------------------------------------------------- the profile (kernel.brc104, role user; the body signed by the handle's key)
@@ -928,15 +894,11 @@ const decl_json =
 const claim_json =
     \\"claim":{"message":{"kind":"mail","op":"put","box":"claim"},"body":{"/":{"bytes":"oA"}}}
 ;
-const adopt_json =
-    \\{"writes":true,"args":{"handle":"string","owner":"string"},"answer":{"handle":"string","domain":"string","identityKey":"string","messagebox":"string","serialNumber":"string"}}
-;
 const TestDecls = struct {
     create: Value,
-    adopt: Value,
     fn get(d: TestDecls, a: Allocator, name: []const u8) !?Value {
         _ = a;
-        return if (eql(u8, name, CREATE)) d.create else d.adopt;
+        return if (eql(u8, name, CREATE)) d.create else null;
     }
 };
 
@@ -944,7 +906,7 @@ test "a create's body" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const decl = TestDecls{ .create = try dagjson.decode(a, decl_json), .adopt = try dagjson.decode(a, adopt_json) };
+    const decl = TestDecls{ .create = try dagjson.decode(a, decl_json) };
     const ok = try parseAsk(a, try dagjson.decode(a, "{\"fn\":\"onboard.create\",\"args\":{\"handle\":\"alice\"," ++ claim_json ++ "}}"), decl);
     try std.testing.expectEqualStrings("alice", ok.ok.handle);
     try std.testing.expect(ok.ok.image == null);
@@ -960,10 +922,9 @@ test "a create's body" {
     const extra = try parseAsk(a, try dagjson.decode(a, "{\"fn\":\"onboard.create\",\"args\":{\"handle\":\"x\",\"owner\":\"y\"," ++ claim_json ++ "}}"), decl);
     try std.testing.expectEqualStrings("args.owner: not in the shape", extra.fail.message);
     const none = try parseAsk(a, try dagjson.decode(a, "{\"fn\":\"onboard.create\"}"), decl);
+    // onboard.adopt is gone (0.5.0: no mailbox instances to adopt).
     const adopt = try parseAsk(a, try dagjson.decode(a, "{\"fn\":\"onboard.adopt\",\"args\":{\"handle\":\"dave\",\"owner\":\"" ++ vector_key ++ "\"}}"), decl);
-    try std.testing.expectEqualStrings(vector_key, adopt.ok.owner.?);
-    const badkey = try parseAsk(a, try dagjson.decode(a, "{\"fn\":\"onboard.adopt\",\"args\":{\"handle\":\"dave\",\"owner\":\"02\"}}"), decl);
-    try std.testing.expectEqualStrings("args.owner: an identity key (hex)", badkey.fail.message);
+    try std.testing.expectEqual(@as(u16, 404), adopt.fail.status);
     try std.testing.expectEqualStrings("args.handle: missing", none.fail.message);
     const notmap = try parseAsk(a, try dagjson.decode(a, "[1]"), decl);
     try std.testing.expectEqualStrings("bad-request", notmap.fail.code);
@@ -1069,9 +1030,23 @@ test "the configuration: the domain and origin, defaults" {
     try std.testing.expectEqualStrings("http://127.0.0.1:8100", set.origin);
     try std.testing.expect(set.name == null);
     try std.testing.expectEqualStrings("", set.ordfs);
+    try std.testing.expect(none.messagebox == null);
+    const mb = try configFrom(a, try dagjson.decode(a, "{\"config\":{\"onboard\":{\"domain\":\"testnet.1sat.app\",\"messagebox\":\"https://accounts.testnet.1sat.app/messagebox/\"}}}"));
+    try std.testing.expectEqualStrings("https://accounts.testnet.1sat.app/messagebox", mb.messagebox.?);
 }
 
-test "a read route's filter answers {answer: <the response>}; adopt is root's (the grants head)" {
+test "a registration is certified with the configured messagebox; a held handle keeps its own; no instance is asked for" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const cfg = try configFrom(a, try dagjson.decode(a, "{\"config\":{\"onboard\":{\"messagebox\":\"https://accounts.testnet.1sat.app/messagebox\"}}}"));
+    try std.testing.expectEqualStrings("https://accounts.testnet.1sat.app/messagebox", messageboxFor(cfg, null).?);
+    const prev = try dagjson.decode(a, "{\"kind\":\"handle-certificate\",\"messagebox\":\"https://old.example/messagebox\"}");
+    try std.testing.expectEqualStrings("https://old.example/messagebox", messageboxFor(cfg, prev).?);
+    try std.testing.expect(messageboxFor(.{}, null) == null);
+}
+
+test "a read route's filter answers {answer: <the response>}" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1080,17 +1055,4 @@ test "a read route's filter answers {answer: <the response>}; adopt is root's (t
     try std.testing.expectEqual(@as(i128, 404), Value.intOf(ans.get("status")).?);
     try std.testing.expectEqualStrings("application/json", Value.str(ans.get("type")).?);
     try std.testing.expectEqualStrings("{\"error\":\"not found\"}", Value.bytesOf(ans.get("body")).?);
-    const root = sk.unhex(a, vector_key).?;
-    var other = root[0..33].*;
-    other[1] ^= 1;
-    const keys = try a.alloc(Value, 1);
-    keys[0] = .{ .bytes = root };
-    var roles = cbor.MapBuilder.init(a);
-    try roles.put("root", .{ .array = keys });
-    var g = cbor.MapBuilder.init(a);
-    try g.put("kind", cbor.string("grants"));
-    try g.put("roles", roles.value());
-    try std.testing.expect(holdsRoot(g.value(), root));
-    try std.testing.expect(!holdsRoot(g.value(), &other));
-    try std.testing.expect(!holdsRoot(null, root));
 }

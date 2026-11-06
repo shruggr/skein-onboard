@@ -4,12 +4,15 @@ The onboarding app for a [skein](https://github.com/shruggr/skein) host:
 installed in the **host skein** (the operator's own instance on a host), it
 gives anyone with a wallet a place on the host, and it is the host's
 **BRC-169 server**. A page with a BRC-104 session gets a skein of its own; a
-wallet that signs a registration gets a mailbox instance and a handle
-certificate. Every handle the host certifies is recorded here; resolve,
+wallet that signs a registration gets a handle certificate — no instance:
+the handle's messagebox is the host skein's messagebox app
+(shruggr/skein-messagebox), which hosts the keys this app records in
+`onboard/index`. Every handle the host certifies is recorded here; resolve,
 search and the manifest are answered from those records. The app asks the
-host's **instance manager** for every instance and the host's **certifier**
-for every signature; it holds no key. It finds both in its address book by
-transport and address (`local` `manager`, `local` `certifier`). Version **0.4.0**.
+host's **instance manager** for every skein it creates and the host's
+**certifier** for every signature; it holds no key. It finds both in its
+address book by transport and address (`local` `manager`, `local`
+`certifier`). Version **0.5.0**.
 
 ## What it is
 
@@ -55,6 +58,7 @@ The host's router maps its own origin onto these (skein
 |---|---|
 | `domain` | the one domain this host's handles are at, `<handle>@<domain>` (default `localhost`) |
 | `origin` | the host's own origin, where the manifest says resolve and search are (default `https://<domain>`) |
+| `messagebox` | the messagebox URL every handle registered here is certified with: the host skein's own URL plus the messagebox app's path (`https://accounts.testnet.1sat.app/messagebox`; `skein-host` writes it). Not set: registration answers 503 |
 | `name`, `note`, `icon` | the host's presentation in `metanet.trust` (each optional) |
 | `ordfs` | the ORDFS content route an avatar's URL is derived under (default `https://api.1sat.app/content`; empty: none) |
 
@@ -77,18 +81,15 @@ good at another.
    no other handle here (409: one key, one handle). It records the request
    and launches a thread; the client's connection is held until the thread
    comes to rest.
-2. The thread emits `create {handle, owner: <the key>, image: "mailbox",
-   domain}` to the instance manager (unless the key holds this handle
-   already) and rests. The manager creates the mailbox instance and answers
-   `{handle, identity, url}` (or `{error}`: the handle is an instance's,
-   409). The answer is recorded under `onboard/instances/<handle>`.
-3. The thread puts the **issuance record** `{kind: "handle-issuance",
+2. No instance is made: the handle's messagebox is `config.onboard.messagebox`
+   (for a key that holds this handle already, the one its last certificate
+   names). The thread puts the **issuance record** `{kind: "handle-issuance",
    handle, domain, subject, messagebox, issuedAt, request, prev?}` and emits
    `issue {handle, domain, subject, serialNumber, issuance}` to the
    certifier. The serial number is base64 of the issuance record's SHA-256
    (the digest its CID names): every issue has its own, a re-registration
    included.
-4. The certifier answers `{certificate, holder: {certificate,
+3. The certifier answers `{certificate, holder: {certificate,
    keyringForSubject}, serialNumber, issuance}`: the plaintext certificate a
    resolver checks and the holder's copy (BRC-52 encrypted fields and the
    keyring a wallet's `acquireCertificate` takes). The thread writes the
@@ -102,8 +103,9 @@ good at another.
 The same key and name again: the mailbox stands, a new certificate is
 issued under a new serial (a wallet that removed the old one can take it).
 
-`onboard.create` goes the same way with the default image, and the new
-instance's handle is certified for the instance's own identity. Its owner
+`onboard.create` asks the instance manager for a skein (`create {handle,
+owner, image?, domain, claim}`; its answer recorded under
+`onboard/instances/<handle>`), and the new instance's handle is certified for the instance's own identity. Its owner
 is whoever signed its claim (shruggr/skein#127), and the page signs it:
 
 - `args.claim` is `{message, body}`: `message` a mail record `{kind:
@@ -138,9 +140,7 @@ this domain or not the shape; 404 no such handle) and kept under
 
 ### Error codes of `/onboard/call`
 
-`bad-request` 400, `bad-args` 400, `not-admitted` 403 (no session; for
-`onboard.adopt`, a key that does not hold root in the host skein — the
-kernel's head `grants`),
+`bad-request` 400, `bad-args` 400, `not-admitted` 403 (no session),
 `unknown-fn` 404, `refused` 409 (the instance manager said no), `failed`
 500 (the thread failed: for one, no instance manager or certifier in this
 skein's address book, because the app is not in the host skein). register
@@ -156,8 +156,8 @@ certifier in its address book); then the operator installs this app into
 it:
 
 ```
-skein-host install https://github.com/shruggr/skein-onboard#v0.4.0 --instance host \
-  --config '{"onboard": {"domain": "skein.nexus"}}'
+skein-host install https://github.com/shruggr/skein-onboard#v0.5.0 --instance host \
+  --config '{"onboard": {"domain": "skein.nexus", "messagebox": "https://host.skein.nexus/messagebox"}}'
 ```
 
 A host skein made before the certifier was in the host skein's address
@@ -188,14 +188,15 @@ certificate), at the commit pinned in `src/testapps.ts`.
 |---|---|
 | the program's contract | `src/main.zig` |
 | the host skein, the instance manager, the certifier | skein `docs/ARCH.md`, `docs/MESSAGES.md` "The providers" |
-| registration and BRC-169 | skein `docs/MESSAGES.md` "Mailbox instances", "BRC-169 is discovery" |
+| registration and BRC-169 | skein `docs/MESSAGES.md` "BRC-169 is discovery" |
+| the hosted messagebox | shruggr/skein-messagebox |
 | apps, manifests, install | skein `docs/APPS.md` |
 
 ## Versions
 
 | | |
 |---|---|
-| this app | 0.4.0 (tag `v0.4.0`): routes, filters and roles (shruggr/skein#143): `routes` with `kernel.brc104` and the role `user` for call, register and profile; the four reads are read routes whose filters answer `{answer: …}`; `onboard.adopt` is root's (the kernel's head `grants`; no `owner` step input); 0.3.4: resolve, search, the manifest and the paymail PKI are reads (`reads[]`, shruggr/skein#135: served by a call, nothing logged); `/profile` stays a row and takes a signed request; 0.3.3: `/register` takes a session, the registrant its identity (shruggr/skein#135); 0.3.2: skein-sdk v0.7.1; 0.3.1: the manager and the certifier found by `sk.peerAt("local", …)` (the address book has no roles, shruggr/skein#126); 0.3.0: `onboard.create` takes the caller's signed claim (shruggr/skein#127) |
+| this app | 0.5.0 (tag `v0.5.0`): registration only — a handle is certified with `config.onboard.messagebox` (the host skein's messagebox app), no mailbox instance is created; `onboard.adopt` removed; 0.4.0: routes, filters and roles (shruggr/skein#143): `routes` with `kernel.brc104` and the role `user` for call, register and profile; the four reads are read routes whose filters answer `{answer: …}`; `onboard.adopt` is root's (the kernel's head `grants`; no `owner` step input); 0.3.4: resolve, search, the manifest and the paymail PKI are reads (`reads[]`, shruggr/skein#135: served by a call, nothing logged); `/profile` stays a row and takes a signed request; 0.3.3: `/register` takes a session, the registrant its identity (shruggr/skein#135); 0.3.2: skein-sdk v0.7.1; 0.3.1: the manager and the certifier found by `sk.peerAt("local", …)` (the address book has no roles, shruggr/skein#126); 0.3.0: `onboard.create` takes the caller's signed claim (shruggr/skein#127) |
 | skein-sdk | v0.7.1, by tag tarball and hash in `build.zig.zon` (`cbor`, `sk`, `app`, `dagjson`, `secp`; no wallet) |
 | skein | log format 9 (shruggr/skein#143); skein's tests pin this repo by commit |
 
